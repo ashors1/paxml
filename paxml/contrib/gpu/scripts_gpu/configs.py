@@ -17,18 +17,19 @@
 
 import fiddle as fdl
 import jax.numpy as jnp
+import numpy as np
 from paxml import experiment_registry
 from paxml import tasks_lib
 from paxml.contrib.gpu.scripts_gpu.tasks import LambadaDataset
 from paxml.contrib.gpu.scripts_gpu.tasks import PileUnsupervisedDataset
 from paxml.tasks.lm.params.c4 import TransformerLmSpmdAdam
+from paxml.tasks.lm.model_params import maybe_setup_moe_params
 from praxis import base_layer
 from praxis import layers
 from praxis import optimizers
 from praxis import pax_fiddle
 from praxis import schedules
 from praxis.layers import transformers
-
 
 WeightInit = base_layer.WeightInit
 
@@ -294,4 +295,29 @@ class GPT175B(Pile126M):
 
   def task(self) -> pax_fiddle.Config[tasks_lib.SingleTask]:
     task_p = super().task()
+    return task_p
+
+
+class MoE126M(Pile126M):
+
+  NUM_EXPERTS = 64
+  NUM_GROUPS = 64 ## num_gpus
+
+  def task(self) -> pax_fiddle.Config[tasks_lib.SingleTask]:
+    task_p = super().task()
+
+    model_p = task_p.model
+    stacked_p = model_p.lm_tpl.stacked_transformer_tpl  # pytype: disable=attribute-error  # enable-nested-classes
+    if self.USE_REPEATED_LAYER:
+      stacked_p = stacked_p.block
+
+    ## make every other layer a MoE layer
+    stacked_p.moe_layers = list(np.arange(0, self.NUM_LAYERS, 2))
+    stacked_p.num_groups = self.NUM_GROUPS
+    stacked_p.num_experts = self.NUM_EXPERTS
+
+    maybe_setup_moe_params(stacked_p)
+
+    stacked_p.moe_layer_tpl.moe_load_balance_loss_weight = 0.01
+
     return task_p
